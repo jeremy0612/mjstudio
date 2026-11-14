@@ -69,6 +69,7 @@ class PanelViewer:
         self._prev_left = 0
         self._drag = None          # None | 'strip' | 'info_w' | 'info_h'
         self._mouse_ok = None      # None=unknown, True/False after first probe
+        self._cam_snap = None      # frozen 3D camera while dragging a panel
         # background pump: decouples overlay render + mouse/drag from the app's call
         # rate, so panels stay live and draggable even while the app thread blocks
         # (e.g. a multi-GB policy load, or a slow inference step).
@@ -173,10 +174,9 @@ class PanelViewer:
         vp = self._handle.viewport  # mjrRect of the 3D view (excludes native panels)
         frames = self._render_thumbs() if frames is None else frames
         cams = [c for c in self._cameras if frames and frames.get(c) is not None]
-        aspect = (frames[cams[0]].shape[1] / frames[cams[0]].shape[0]) if cams else 4 / 3
 
-        self._handle_drag(vp, self._geom(vp, len(cams), aspect))
-        g = self._geom(vp, len(cams), aspect)   # geometry after any drag
+        self._handle_drag(vp, self._geom(vp, len(cams)))
+        g = self._geom(vp, len(cams))   # geometry after any drag
 
         images = []
         # --- camera strip: all N thumbs fit across the viewport width ---
@@ -215,20 +215,20 @@ class PanelViewer:
             self._handle.set_images(images)
         self._handle.sync()
 
-    def _geom(self, vp, n, aspect):
-        """Panel geometry in framebuffer px (same frame as the mouse). Thumbs are
-        height-driven (so dragging the strip edge rescales them) but the height is
-        capped so all N fit the viewport width."""
-        strip_h = self._strip_frac * vp.height
-        if n:
-            th = min(strip_h, vp.width / (n * aspect))
-        else:
-            th = 0.0
-        tw = th * aspect
+    def _geom(self, vp, n):
+        """Panel geometry in framebuffer px (same frame as the mouse).
+
+        Camera strip: thumbs fill the full viewport width (each = vp.width/n); dragging
+        the strip's top edge changes only their height (vertical). The info/log panel
+        resizes on both axes. ponytail: thumbs are stretched to fill (aspect not kept) —
+        that's the requested "fill the width" behaviour.
+        """
+        th = (self._strip_frac * vp.height) if n else 0.0
+        tw = (vp.width / n) if n else 0.0
         iw = self._info_w_frac * vp.width
         ih = self._info_h_frac * vp.height
         return {
-            "th": th, "tw": tw, "strip_w": n * tw, "strip_y": vp.bottom + th,
+            "th": th, "tw": tw, "strip_w": vp.width if n else 0.0, "strip_y": vp.bottom + th,
             "iw": iw, "ih": ih,
             "ix": vp.left + vp.width - iw, "iy": vp.bottom + vp.height - ih,
         }
@@ -271,7 +271,24 @@ class PanelViewer:
         elif self._drag == "info_h" and vp.height:
             self._info_h_frac = min(0.95, max(_MIN_FRAC, (vp.bottom + vp.height - my) / vp.height))
 
+        self._freeze_camera()
         self._prev_left = left
+
+    def _freeze_camera(self) -> None:
+        """While dragging a panel, pin the 3D camera so the left-drag doesn't orbit the
+        scene. MuJoCo moves its own free camera from the same mouse; we snapshot it when
+        the drag starts and write it back each tick, cancelling the orbit."""
+        cam = getattr(self._handle, "cam", None)
+        if cam is None:
+            return
+        if self._drag:
+            if self._cam_snap is None:
+                self._cam_snap = (cam.azimuth, cam.elevation, cam.distance, tuple(cam.lookat))
+            az, el, di, lk = self._cam_snap
+            cam.azimuth, cam.elevation, cam.distance = az, el, di
+            cam.lookat[:] = lk
+        else:
+            self._cam_snap = None
 
     # ---- rendering helpers ----
     def _render_thumbs(self) -> dict:

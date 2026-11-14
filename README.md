@@ -89,7 +89,9 @@ pip install -e '.[panel]'   # + Pillow, for the draggable image info panel
 
 ## Controls
 3D view + native UI: all MuJoCo's own (drag to orbit, scroll to zoom, `Tab`/`[`/`]` to cycle
-cameras, etc.). Panels: drag the strip's top edge, or the info panel's left/bottom edges.
+cameras, etc.). Panels: the camera strip fills the viewport width — drag its top edge to change
+height; the info/log panel's left + bottom edges resize it on both axes. While you drag a panel
+the 3D camera is held still (the resize follows the cursor live), so the scene doesn't orbit.
 
 ## Demo
 
@@ -105,8 +107,8 @@ mjpython mjstudio/examples/pendulum.py      # macOS
   model, or stalled in a slow step. Pass `open(auto=False)` to drive everything yourself from
   `update()` (single-thread apps). `sync`/`set_images`/`set_texts` lock internally, so the pump
   is thread-safe.
-- Dragging a panel edge with the left button also orbits MuJoCo's camera (MuJoCo owns
-  left-drag in the 3D area); the resize still happens.
+- While a panel is being dragged, mjstudio pins MuJoCo's free camera (snapshots it on grab,
+  writes it back each tick) so the left-drag resizes the panel without orbiting the scene.
 - **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).
 - If thumbnails/panel appear upside down, pass `flip_images=True`.
 - Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay support (3.x+).

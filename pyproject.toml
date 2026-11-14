@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mjstudio"
-version = "0.3.2"
+version = "0.3.3"
 description = "Wrap MuJoCo's own viewer and add mouse-draggable panels around it: the real interactive 3D view + native UI + a camera-thumbnail strip + an info/log panel, via the passive viewer's overlay hooks."
 readme = "README.md"
 requires-python = ">=3.10"
