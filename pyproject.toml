@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mjstudio"
-version = "0.2.0"
-description = "Wrap MuJoCo's own viewer and add panels around it: the real interactive 3D view + a camera-thumbnail strip + an info/log panel, via the passive viewer's overlay hooks."
+version = "0.3.0"
+description = "Wrap MuJoCo's own viewer and add mouse-draggable panels around it: the real interactive 3D view + native UI + a camera-thumbnail strip + an info/log panel, via the passive viewer's overlay hooks."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,6 +13,11 @@ dependencies = [
     "mujoco>=3.2",
     "numpy>=1.23",
 ]
+
+[project.optional-dependencies]
+# PIL makes the info/log panel a draggable image; without it the panel falls back
+# to anchored (non-draggable) overlay text.
+panel = ["pillow>=9"]
 
 [project.urls]
 Homepage = "https://github.com/jeremy0612/mjstudio"

@@ -1,0 +1,33 @@
+diff --git a/python/mujoco/simulate.cc b/python/mujoco/simulate.cc
+index 0e7aa99..4cc9349 100644
+--- a/python/mujoco/simulate.cc
++++ b/python/mujoco/simulate.cc
+@@ -133,6 +133,20 @@ class SimulateWrapper {
+     return simulate_->uistate.rect[3];
+   }
+ 
++  // mjstudio patch: expose current mouse/scroll/button state from the UI
++  // thread so Python overlays can implement draggable panels. Lock-free scalar
++  // read of simulate_->uistate; a torn read is harmless for cursor tracking.
++  // Tuple: (x, y, dx, dy, sx, sy, left, right, button).
++  std::tuple<double, double, double, double, double, double, int, int, int>
++  GetMouse() const {
++    if (!simulate_) {
++      return std::make_tuple(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
++    }
++    const mjuiState& s = simulate_->uistate;
++    return std::make_tuple(s.x, s.y, s.dx, s.dy, s.sx, s.sy, s.left, s.right,
++                           s.button);
++  }
++
+   void SetFigures(
+       const std::vector<std::pair<mjrRect, py::object>>& viewports_figures) {
+     if (WaitForAtomicNoGil(simulate_->newfigurerequest, 0)) {
+@@ -373,6 +387,7 @@ PYBIND11_MODULE(_simulate, pymodule, pybind11::mod_gil_not_used()) {
+       .def_property_readonly("m", &SimulateWrapper::GetModel)
+       .def_property_readonly("d", &SimulateWrapper::GetData)
+       .def_property_readonly("viewport", &SimulateWrapper::GetViewport)
++      .def_property_readonly("mouse", &SimulateWrapper::GetMouse)
+       .def_property_readonly("ctrl_noise_std",
+                              py::cpp_function(GetIfNotNull(&mujoco::Simulate::ctrl_noise_std), py::call_guard<py::gil_scoped_release>()))
+       .def_property_readonly("ctrl_noise_rate",

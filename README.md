@@ -1,25 +1,19 @@
 # mjstudio
 
-A thin wrapper around **MuJoCo's own viewer** that adds panels around it — without
-reimplementing the 3D view.
+A thin wrapper around **MuJoCo's own viewer** that adds **mouse-draggable panels** around
+it — without reimplementing the 3D view.
 
-It launches the real `mujoco.viewer` (`launch_passive`), so all the interactive 3D
-(orbit, zoom, perturbations, camera cycling, keybinds, built-in UI) comes straight from
-MuJoCo. On top of it, mjstudio uses the passive viewer's official overlay hooks to add:
+It launches the real `mujoco.viewer` (`launch_passive`), so all the interactive 3D (orbit,
+zoom, perturbations, camera cycling, keybinds) **and MuJoCo's native left/right UI panels**
+come straight from MuJoCo. On top of it, mjstudio overlays:
 
 - a **camera-thumbnail strip** (one live render per named fixed camera) via `set_images`,
-- an **info + log panel** (key/value info and a timestamped log) via `set_texts`.
+- an **info + log panel** (key/value info and a timestamped log) via `set_images` (PIL) or
+  `set_texts` (fallback).
 
-Built for watching and profiling policies in sim, and reusable across MuJoCo projects.
-Deps: `mujoco` + `numpy` only.
-
-## Install
-
-```bash
-pip install -e .
-```
-
-## Use
+**Grab a panel edge and drag to resize it.** The strip's top edge sets the thumbnail scale;
+the info panel's left/bottom edges set its width/height. Panels are sized as fractions of the
+3D viewport, so they stay put when you open/close the native panels or resize the window.
 
 ```python
 from mjstudio import PanelViewer
@@ -33,13 +27,69 @@ while viewer.is_running():
 viewer.close()
 ```
 
-`viewer.update(frames=...)` takes `{cam_name: HWC uint8}` to reuse renders you already
-have (e.g. a policy's observation frames) instead of rendering the thumbnails a second
-time; omit it and mjstudio renders the cameras itself with its own offscreen renderer.
+`viewer.update(frames=...)` takes `{cam_name: HWC uint8}` to reuse renders you already have
+(e.g. a policy's observation frames); omit it and mjstudio renders the cameras itself.
 
-### Controls
-All from MuJoCo's own viewer (unchanged): drag to orbit, right-drag to pan, scroll to
-zoom, double-click + Ctrl-drag to perturb, `Tab`/`[`/`]` to cycle cameras, etc.
+## Why a patched MuJoCo?
+
+Dragging needs the cursor position. MuJoCo's passive viewer owns the window and the mouse,
+and **never exposed the cursor to Python** (only `key_callback`). mjstudio adds it with a
+~20-line patch to MuJoCo's `_simulate` pybind that exposes `Simulate.mouse`
+(`patches/expose-sim-mouse.patch`). mjstudio reads it via `handle._get_sim().mouse` — both the
+mouse and the overlay rects are framebuffer pixels, bottom-left origin, so no conversion.
+
+The patch only touches the python `_simulate` extension; **the MuJoCo core library is not
+rebuilt** — it is linked from your existing `mujoco` install, so the patched extension is
+ABI-compatible with the rest of it. On **unpatched** MuJoCo the panels still render; they just
+can't be dragged (a one-time log line says so).
+
+### Install the patched MuJoCo (pick one)
+
+**A. Drop-in the released extension** (fastest — no build):
+download `_simulate.cpython-*.so` for your platform from this repo's
+[Releases](https://github.com/jeremy0612/mjstudio/releases) and copy it over your install:
+
+```bash
+MJ=$(python -c 'import mujoco,os;print(os.path.dirname(mujoco.__file__))')
+cp "$MJ"/_simulate.*.so "$MJ"/_simulate.orig        # backup
+cp ~/Downloads/_simulate.cpython-312-darwin.so "$MJ"/   # the released file
+```
+
+**B. Build it yourself** (any platform / MuJoCo version):
+
+```bash
+# venv needs: pip build cmake ninja  (uv: `uv pip install pip build cmake ninja`)
+git submodule update --init third_party/mujoco
+scripts/build_patched_mujoco.sh            # -> mjstudio/dist/*.whl + _simulate*.so
+```
+
+Then drop in `dist/_simulate*.so` as in A, or `pip install dist/mujoco_core-*.whl`.
+
+### Sync with upstream MuJoCo
+
+The upstream source is tracked as the `third_party/mujoco` submodule, pinned to the tag in
+`patches/MUJOCO_VERSION`. To move to a new MuJoCo release:
+
+```bash
+cd third_party/mujoco && git fetch --tags && git checkout <new-tag> && cd -
+echo <new-tag> > patches/MUJOCO_VERSION
+git -C third_party/mujoco apply --3way ../../patches/expose-sim-mouse.patch   # re-check it applies
+scripts/build_patched_mujoco.sh
+```
+
+If the patch no longer applies cleanly, fix the three lines it adds (a `GetMouse()` method and
+one `def_property_readonly("mouse", ...)`) and regenerate the patch with `git -C third_party/mujoco diff`.
+
+## Install (the library)
+
+```bash
+pip install -e .            # mjstudio itself
+pip install -e '.[panel]'   # + Pillow, for the draggable image info panel
+```
+
+## Controls
+3D view + native UI: all MuJoCo's own (drag to orbit, scroll to zoom, `Tab`/`[`/`]` to cycle
+cameras, etc.). Panels: drag the strip's top edge, or the info panel's left/bottom edges.
 
 ## Demo
 
@@ -50,9 +100,7 @@ mjpython mjstudio/examples/pendulum.py      # macOS
 
 ## Notes
 - **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).
-- Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay
-  support (3.x+). If thumbnails appear upside down, pass `flip_images=True`.
-- The viewer shows the `model`/`data` you pass in; mutate them in your loop and call
-  `update()` — mjstudio never steps the sim itself.
+- If thumbnails/panel appear upside down, pass `flip_images=True`.
+- Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay support (3.x+).
 
 MIT licensed.
