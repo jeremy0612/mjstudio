@@ -184,7 +184,7 @@ class PanelViewer:
             action = mujoco.mjtMouse.mjMOUSE_MOVE_H if shift else mujoco.mjtMouse.mjMOUSE_MOVE_V
         else:
             action = mujoco.mjtMouse.mjMOUSE_ZOOM
-        mujoco.mjv_moveCamera(self._model, action, dx / h, dy / h, self._scn, self._cam)
+        mujoco.mjv_moveCamera(self._model, action, dx / h, dy / h, self._cam)
 
     def _on_button(self, window, button, act, mods):
         down = act == glfw.PRESS
@@ -200,7 +200,7 @@ class PanelViewer:
         if self._follow >= 0:
             return
         mujoco.mjv_moveCamera(self._model, mujoco.mjtMouse.mjMOUSE_ZOOM,
-                              0.0, -0.05 * yoff, self._scn, self._cam)
+                              0.0, -0.05 * yoff, self._cam)
 
     def _on_key(self, window, key, scancode, act, mods):
         if act != glfw.PRESS:
