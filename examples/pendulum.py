@@ -41,7 +41,8 @@ def main():
     t0 = time.time()
     i = 0
     while viewer.is_running():
-        mujoco.mj_step(model, data)
+        with viewer.lock():        # serialize physics with the background pump's sync()
+            mujoco.mj_step(model, data)
         if i % 10 == 0:
             viewer.info(step=i, sim_t=round(data.time, 2),
                         fps=round((i + 1) / (time.time() - t0 + 1e-9), 1))

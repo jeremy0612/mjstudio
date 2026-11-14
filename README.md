@@ -107,6 +107,15 @@ mjpython mjstudio/examples/pendulum.py      # macOS
   model, or stalled in a slow step. Pass `open(auto=False)` to drive everything yourself from
   `update()` (single-thread apps). `sync`/`set_images`/`set_texts` lock internally, so the pump
   is thread-safe.
+- **Hold `viewer.lock()` around data mutations** when the pump is on: the pump copies your
+  `mjData` off-thread for rendering, so any `mj_step`/`mj_forward`/`mjv_updateScene` you run
+  must hold the sim mutex or MuJoCo raises *"attempting to copy mjData while stack is in use"*.
+  ```python
+  while viewer.is_running():
+      with viewer.lock():
+          mujoco.mj_step(model, data)   # or mj_forward, or render the data yourself
+      viewer.info(...); viewer.update()
+  ```
 - While a panel is being dragged, mjstudio pins MuJoCo's free camera (snapshots it on grab,
   writes it back each tick) so the left-drag resizes the panel without orbiting the scene.
 - **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).

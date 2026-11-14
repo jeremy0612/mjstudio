@@ -112,6 +112,16 @@ class PanelViewer:
     def is_running(self) -> bool:
         return self._handle is not None and self._handle.is_running()
 
+    def lock(self):
+        """Context manager for the viewer's sim mutex. Hold it around ANY mutation of the
+        model/data you passed in (``mj_step``/``mj_forward``/``mjv_updateScene``) so your
+        writes don't race the background pump's ``sync()`` — otherwise MuJoCo raises
+        "attempting to copy mjData while stack is in use". No-op once the window closes."""
+        import contextlib
+        if self._handle is None:
+            return contextlib.nullcontext()
+        return self._handle.lock()
+
     def close(self) -> None:
         self._stop = True
         if self._thread is not None:
@@ -298,9 +308,10 @@ class PanelViewer:
         if self._renderer is None:
             self._renderer = mujoco.Renderer(self._m, 240, 320)
         out = {}
-        for name in self._cameras:
-            self._renderer.update_scene(self._d, camera=name)
-            out[name] = self._renderer.render()
+        with self.lock():   # update_scene reads the shared data; serialize with sync()
+            for name in self._cameras:
+                self._renderer.update_scene(self._d, camera=name)
+                out[name] = self._renderer.render()
         return out
 
     def _render_info_image(self, lines, w, h):
