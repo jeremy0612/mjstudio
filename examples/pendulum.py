@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Standalone mjstudio demo — no robot, no extra deps.
+"""Standalone mjstudio demo — wraps MuJoCo's own viewer, adds a camera thumbnail + panel.
 
-A double pendulum swings under gravity. One fixed camera shows up as a thumbnail; the
-side panel streams step / time / fps and a growing log. Drag to orbit, scroll to zoom,
-Tab to cycle the main view through the fixed camera, Esc to quit.
+A double pendulum swings under gravity. The real MuJoCo viewer handles all the 3D
+(orbit/zoom/keybinds); mjstudio overlays one camera thumbnail (bottom) and an info/log
+panel (top-right).
 
-    python mjstudio/examples/pendulum.py
+    python mjstudio/examples/pendulum.py          # Linux/Windows
+    mjpython mjstudio/examples/pendulum.py         # macOS (passive viewer needs mjpython)
 """
 import time
 
@@ -36,24 +37,20 @@ def main():
     data = mujoco.MjData(model)
     data.qpos[:] = [2.0, -1.0]
 
-    viewer = PanelViewer(model, cameras=["side"], title="mjstudio demo — double pendulum")
-    viewer.open()  # window up immediately
-
-    def work(v):
-        t0 = time.time()
-        for i in range(100_000):
-            if not v.is_running():
-                break
-            mujoco.mj_step(model, data)
-            v.set_qpos(data.qpos)
-            if i % 10 == 0:
-                fps = (i + 1) / (time.time() - t0 + 1e-9)
-                v.info(step=i, sim_t=round(data.time, 2), fps=round(fps, 1))
-            if i % 500 == 0:
-                v.log(f"tick {i}: j1={data.qpos[0]:+.2f} j2={data.qpos[1]:+.2f}")
-            time.sleep(0.002)
-
-    viewer.run(worker=work)
+    viewer = PanelViewer(model, data, cameras=["side"], title="mjstudio demo").open()
+    t0 = time.time()
+    i = 0
+    while viewer.is_running():
+        mujoco.mj_step(model, data)
+        if i % 10 == 0:
+            viewer.info(step=i, sim_t=round(data.time, 2),
+                        fps=round((i + 1) / (time.time() - t0 + 1e-9), 1))
+        if i % 500 == 0:
+            viewer.log(f"tick {i}: j1={data.qpos[0]:+.2f} j2={data.qpos[1]:+.2f}")
+        viewer.update()          # thumbnail + panel + viewer.sync()
+        time.sleep(0.002)
+        i += 1
+    viewer.close()
 
 
 if __name__ == "__main__":

@@ -1,27 +1,22 @@
 # mjstudio
 
-A small, reusable **native MuJoCo paneled viewer**. One GLFW window holding:
+A thin wrapper around **MuJoCo's own viewer** that adds panels around it — without
+reimplementing the 3D view.
 
-- the real interactive MuJoCo 3D view (orbit / pan / zoom, same `mjv_*`/`mjr_*` stack as
-  the stock viewer),
-- a **camera-thumbnail strip** (one live render per named fixed camera),
-- an **info + log panel** (key/value info and a timestamped, scrolling log).
+It launches the real `mujoco.viewer` (`launch_passive`), so all the interactive 3D
+(orbit, zoom, perturbations, camera cycling, keybinds, built-in UI) comes straight from
+MuJoCo. On top of it, mjstudio uses the passive viewer's official overlay hooks to add:
 
-Built for watching and **profiling** policies in simulation, and for reuse across MuJoCo
-projects. Pure `mujoco` + `glfw` + `numpy` — no web stack, no imgui.
+- a **camera-thumbnail strip** (one live render per named fixed camera) via `set_images`,
+- an **info + log panel** (key/value info and a timestamped log) via `set_texts`.
 
-## Why it exists
-
-MuJoCo's stock passive viewer can't host custom panels, and on macOS it needs `mjpython`
-(which runs your code off the main thread). `mjstudio` instead **is** the main-thread loop
-in a plain `python` process, so the window opens the moment you build the model — before
-any heavy work — and your sim/inference runs on a worker thread that feeds it state.
+Built for watching and profiling policies in sim, and reusable across MuJoCo projects.
+Deps: `mujoco` + `numpy` only.
 
 ## Install
 
 ```bash
-pip install -e .          # from this directory
-# deps: mujoco>=3.2, glfw>=2.6, numpy
+pip install -e .
 ```
 
 ## Use
@@ -29,37 +24,35 @@ pip install -e .          # from this directory
 ```python
 from mjstudio import PanelViewer
 
-viewer = PanelViewer(model, cameras=["cam_left_wrist", "cam_top"], title="my sim")
-viewer.open()                         # window up now
-
-def work(v):                          # runs on a worker thread
-    while v.is_running():
-        step()
-        v.set_qpos(data.qpos)         # drives the 3D view + all thumbnails
-        v.info(step=i, fps=f)         # key/value lines in the side panel
-        v.log("event happened")       # timestamped log tail
-
-viewer.run(worker=work)               # blocking main-thread loop; ends on window close
+viewer = PanelViewer(model, data, cameras=["cam_left_wrist", "cam_top"]).open()
+while viewer.is_running():
+    step()                         # you own model/data and the clock
+    viewer.info(step=i, fps=f)     # key/value lines in the panel
+    viewer.log("event happened")   # timestamped log tail
+    viewer.update()                # thumbnails + panel + viewer.sync()
+viewer.close()
 ```
 
-Or drive it manually: `viewer.open()` then `while viewer.is_running(): viewer.render()`.
+`viewer.update(frames=...)` takes `{cam_name: HWC uint8}` to reuse renders you already
+have (e.g. a policy's observation frames) instead of rendering the thumbnails a second
+time; omit it and mjstudio renders the cameras itself with its own offscreen renderer.
 
 ### Controls
-- **Left-drag** orbit · **Right-drag** pan · **Scroll** zoom (hold **Shift** for the
-  horizontal variants).
-- **Tab** cycles the main view: free camera → each fixed camera → back.
-- **Esc** or closing the window stops the loop (and the worker).
+All from MuJoCo's own viewer (unchanged): drag to orbit, right-drag to pan, scroll to
+zoom, double-click + Ctrl-drag to perturb, `Tab`/`[`/`]` to cycle cameras, etc.
 
 ## Demo
 
 ```bash
-python examples/pendulum.py
+python   mjstudio/examples/pendulum.py      # Linux / Windows
+mjpython mjstudio/examples/pendulum.py      # macOS
 ```
 
-## Notes / limits
-- The viewer renders cameras itself from the fed `qpos`; pushing pre-rendered frames via
-  `set_frames` is reserved for overlaying real-camera images later.
-- `mjr_overlay` text uses fixed grid anchors; the log panel shows a bounded tail.
-- macOS: run under plain `python` (not `mjpython`); GLFW owns the main thread here.
+## Notes
+- **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).
+- Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay
+  support (3.x+). If thumbnails appear upside down, pass `flip_images=True`.
+- The viewer shows the `model`/`data` you pass in; mutate them in your loop and call
+  `update()` — mjstudio never steps the sim itself.
 
 MIT licensed.
