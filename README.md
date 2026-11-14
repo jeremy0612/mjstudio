@@ -33,10 +33,16 @@ viewer.close()
 ## Why a patched MuJoCo?
 
 Dragging needs the cursor position. MuJoCo's passive viewer owns the window and the mouse,
-and **never exposed the cursor to Python** (only `key_callback`). mjstudio adds it with a
-~20-line patch to MuJoCo's `_simulate` pybind that exposes `Simulate.mouse`
-(`patches/expose-sim-mouse.patch`). mjstudio reads it via `handle._get_sim().mouse` — both the
-mouse and the overlay rects are framebuffer pixels, bottom-left origin, so no conversion.
+and **never exposed the cursor to Python** (only `key_callback`). mjstudio adds it with a small
+patch to MuJoCo's `_simulate` (`patches/expose-sim-mouse.patch`) that exposes `Simulate.mouse`
+(cursor + buttons, read via `handle._get_sim().mouse` — framebuffer pixels, bottom-left origin,
+same frame as the overlay rects, so no conversion).
+
+To keep the 3D scene from orbiting while you drag a panel (MuJoCo turns any left-drag in the 3D
+view into a camera orbit, and gives Python no way to veto it), mjstudio switches the viewer
+camera to type `USER` on grab — MuJoCo then renders the last pose and ignores the orbit, so
+there's no shake — and restores the free camera and its saved pose on release. No patch needed
+for that part; it's pure Python via `handle.cam`.
 
 The patch only touches the python `_simulate` extension; **the MuJoCo core library is not
 rebuilt** — it is linked from your existing `mujoco` install, so the patched extension is
@@ -90,8 +96,10 @@ pip install -e '.[panel]'   # + Pillow, for the draggable image info panel
 ## Controls
 3D view + native UI: all MuJoCo's own (drag to orbit, scroll to zoom, `Tab`/`[`/`]` to cycle
 cameras, etc.). Panels: the camera strip fills the viewport width — drag its top edge to change
-height; the info/log panel's left + bottom edges resize it on both axes. While you drag a panel
-the 3D camera is held still (the resize follows the cursor live), so the scene doesn't orbit.
+height; the info/log panel's left + bottom edges resize it on both axes. Thumbnails keep their
+aspect ratio (letterboxed) — resizing changes the window, not the frame. While you drag a panel
+the 3D camera is held completely still (the viewer camera is switched to type `USER` for the
+duration of the drag), so the scene doesn't orbit or shake.
 
 ## Demo
 
@@ -116,8 +124,9 @@ mjpython mjstudio/examples/pendulum.py      # macOS
           mujoco.mj_step(model, data)   # or mj_forward, or render the data yourself
       viewer.info(...); viewer.update()
   ```
-- While a panel is being dragged, mjstudio pins MuJoCo's free camera (snapshots it on grab,
-  writes it back each tick) so the left-drag resizes the panel without orbiting the scene.
+- While a panel is being dragged, mjstudio switches the viewer camera to type `USER` so MuJoCo
+  ignores the 3D-drag orbit (the scene stays still — no orbit, no shake) and restores the free
+  camera + its saved pose on release. Pure Python via `handle.cam`; no patch required.
 - **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).
 - If thumbnails/panel appear upside down, pass `flip_images=True`.
 - Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay support (3.x+).

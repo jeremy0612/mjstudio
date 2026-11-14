@@ -46,6 +46,23 @@ def _nn_resize(img: np.ndarray, tw: int, th: int) -> np.ndarray:
     return img[yi][:, xi]
 
 
+def _fit(img: np.ndarray, tw: int, th: int, bg=(18, 20, 26)) -> np.ndarray:
+    """Fit img inside a tw×th window keeping its aspect ratio (letterbox), centred on a
+    bg canvas. Resizing the window changes the window size, not the frame's shape."""
+    tw, th = max(1, int(tw)), max(1, int(th))
+    h, w = img.shape[:2]
+    canvas = np.empty((th, tw, 3), np.uint8)
+    canvas[:] = bg
+    if w == 0 or h == 0:
+        return canvas
+    s = min(tw / w, th / h)
+    rw, rh = max(1, min(tw, int(w * s))), max(1, min(th, int(h * s)))
+    small = _nn_resize(img, rw, rh)
+    y0, x0 = (th - rh) // 2, (tw - rw) // 2
+    canvas[y0:y0 + rh, x0:x0 + rw] = small[:rh, :rw]
+    return canvas
+
+
 class PanelViewer:
     def __init__(self, model, data, cameras=None, title: str = "mjstudio",
                  log_maxlen: int = 400, flip_images: bool = False,
@@ -69,7 +86,7 @@ class PanelViewer:
         self._prev_left = 0
         self._drag = None          # None | 'strip' | 'info_w' | 'info_h'
         self._mouse_ok = None      # None=unknown, True/False after first probe
-        self._cam_snap = None      # frozen 3D camera while dragging a panel
+        self._cam_snap = None      # saved free-camera pose while a panel is being dragged
         # background pump: decouples overlay render + mouse/drag from the app's call
         # rate, so panels stay live and draggable even while the app thread blocks
         # (e.g. a multi-GB policy load, or a slow inference step).
@@ -192,7 +209,7 @@ class PanelViewer:
         # --- camera strip: all N thumbs fit across the viewport width ---
         tw, th = int(g["tw"]), int(g["th"])
         for i, name in enumerate(cams):
-            thumb = _nn_resize(frames[name], tw, th)
+            thumb = _fit(frames[name], tw, th)   # keep aspect, letterbox — don't distort
             if self._flip:
                 thumb = thumb[::-1]
             x = int(vp.left + i * tw)
@@ -285,19 +302,28 @@ class PanelViewer:
         self._prev_left = left
 
     def _freeze_camera(self) -> None:
-        """While dragging a panel, pin the 3D camera so the left-drag doesn't orbit the
-        scene. MuJoCo moves its own free camera from the same mouse; we snapshot it when
-        the drag starts and write it back each tick, cancelling the orbit."""
+        """Keep the 3D scene perfectly still while a panel is being dragged.
+
+        MuJoCo orbits its free camera on any left-drag in the 3D view, and the passive
+        viewer gives Python no way to veto that input. So on grab we switch the viewer
+        camera to type USER — MuJoCo then renders the last pose and ignores the orbit, so
+        there's no per-frame fight and no shake — and on release we restore the free camera
+        and its saved pose, so the view returns exactly where it was. State change happens
+        only on grab/release (not every frame), so nothing jitters."""
         cam = getattr(self._handle, "cam", None)
         if cam is None:
             return
+        import mujoco
         if self._drag:
-            if self._cam_snap is None:
-                self._cam_snap = (cam.azimuth, cam.elevation, cam.distance, tuple(cam.lookat))
-            az, el, di, lk = self._cam_snap
+            if self._cam_snap is None:   # just grabbed → freeze the view
+                self._cam_snap = (int(cam.type), cam.azimuth, cam.elevation,
+                                  cam.distance, tuple(cam.lookat))
+                cam.type = mujoco.mjtCamera.mjCAMERA_USER
+        elif self._cam_snap is not None:  # just released → restore the free camera
+            t, az, el, di, lk = self._cam_snap
             cam.azimuth, cam.elevation, cam.distance = az, el, di
             cam.lookat[:] = lk
-        else:
+            cam.type = t
             self._cam_snap = None
 
     # ---- rendering helpers ----
