@@ -17,4 +17,4 @@ On unpatched MuJoCo the panels still render; they just can't be dragged.
 from .viewer import PanelViewer
 
 __all__ = ["PanelViewer"]
-__version__ = "0.3.1"
+__version__ = "0.3.2"

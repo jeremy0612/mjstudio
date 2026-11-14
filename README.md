@@ -99,6 +99,14 @@ mjpython mjstudio/examples/pendulum.py      # macOS
 ```
 
 ## Notes
+- **Background pump (default)**: `open()` starts a ~60 Hz thread that renders the overlays
+  and handles dragging on its own. Your app just feeds data (`info`/`log`/`update(frames=)`),
+  so the panels stay live and **draggable even while your thread is blocked** — loading a big
+  model, or stalled in a slow step. Pass `open(auto=False)` to drive everything yourself from
+  `update()` (single-thread apps). `sync`/`set_images`/`set_texts` lock internally, so the pump
+  is thread-safe.
+- Dragging a panel edge with the left button also orbits MuJoCo's camera (MuJoCo owns
+  left-drag in the 3D area); the resize still happens.
 - **macOS**: the passive viewer requires `mjpython` (MuJoCo's own requirement).
 - If thumbnails/panel appear upside down, pass `flip_images=True`.
 - Overlay hooks (`set_images`/`set_texts`) need a MuJoCo with passive-viewer overlay support (3.x+).

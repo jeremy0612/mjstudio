@@ -25,6 +25,7 @@ macOS: the passive viewer needs `mjpython` (that is MuJoCo's requirement, not ou
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 
@@ -68,6 +69,15 @@ class PanelViewer:
         self._prev_left = 0
         self._drag = None          # None | 'strip' | 'info_w' | 'info_h'
         self._mouse_ok = None      # None=unknown, True/False after first probe
+        # background pump: decouples overlay render + mouse/drag from the app's call
+        # rate, so panels stay live and draggable even while the app thread blocks
+        # (e.g. a multi-GB policy load, or a slow inference step).
+        self._lock = threading.Lock()
+        self._frames = None        # latest frames handed in by the app (may be None)
+        self._thread = None
+        self._auto = True
+        self._stop = False
+        self._pump_err = None
         # optional PIL text rendering for a draggable info panel
         try:
             from PIL import ImageFont
@@ -81,18 +91,31 @@ class PanelViewer:
             self._font = None
 
     # ---- lifecycle ----
-    def open(self, show_left_ui: bool = True, show_right_ui: bool = True) -> "PanelViewer":
+    def open(self, show_left_ui: bool = True, show_right_ui: bool = True,
+             auto: bool = True) -> "PanelViewer":
         # Keep MuJoCo's native left/right panels (the whole point of embedding the
         # original viewer). Defaults match launch_passive's own defaults.
+        # auto=True (default): a background thread pumps the overlays + drag at ~60 Hz,
+        # so the app only has to feed data via info()/log()/update(frames=...). Set
+        # auto=False to drive everything yourself from update() (single-thread apps).
         import mujoco.viewer
         self._handle = mujoco.viewer.launch_passive(
             self._m, self._d, show_left_ui=show_left_ui, show_right_ui=show_right_ui)
+        self._auto = auto
+        if auto:
+            self._stop = False
+            self._thread = threading.Thread(target=self._pump, name="mjstudio-pump", daemon=True)
+            self._thread.start()
         return self
 
     def is_running(self) -> bool:
         return self._handle is not None and self._handle.is_running()
 
     def close(self) -> None:
+        self._stop = True
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
         if self._renderer is not None:
             try:
                 self._renderer.close()
@@ -106,15 +129,42 @@ class PanelViewer:
                 pass
             self._handle = None
 
-    # ---- panel content ----
+    # ---- panel content (thread-safe; the app thread writes, the pump reads) ----
     def info(self, **kw) -> None:
-        self._info.update(kw)
+        with self._lock:
+            self._info.update(kw)
 
     def log(self, msg: str) -> None:
-        self._logs.append(f"{time.time() - self._t0:7.2f}s  {msg}")
+        with self._lock:
+            self._logs.append(f"{time.time() - self._t0:7.2f}s  {msg}")
 
-    # ---- the one call per frame ----
+    # ---- feed / drive ----
     def update(self, frames: dict | None = None) -> None:
+        """Hand the latest frames to the viewer.
+
+        auto=True (default): just stores them; the background pump renders + handles
+        drag at ~60 Hz. auto=False: renders synchronously on the caller's thread.
+        """
+        if self._auto:
+            with self._lock:
+                self._frames = frames
+            return
+        self._draw(frames)
+
+    def _pump(self) -> None:
+        """Background render/drag loop — runs until close() or the window is shut."""
+        while not self._stop and self.is_running():
+            with self._lock:
+                frames = self._frames
+            try:
+                self._draw(frames)
+            except Exception as e:  # noqa: BLE001 — a render loop must survive transients
+                if self._pump_err is None:
+                    self._pump_err = repr(e)
+                    print(f"[mjstudio] pump error (will keep running): {e!r}")
+            time.sleep(1 / 60)
+
+    def _draw(self, frames: dict | None = None) -> None:
         """Handle drags, overlay the panels, then sync the real viewer."""
         if not self.is_running():
             return
@@ -141,9 +191,12 @@ class PanelViewer:
             images.append(self._hbar(vp.left, g["strip_y"], len(cams) * tw, self._drag == "strip"))
 
         # --- info/log panel, top-right of the viewport ---
+        with self._lock:   # snapshot shared state quickly, render without the lock
+            info_items = list(self._info.items())
+            logs = list(self._logs)[-40:]
         lines = [self.title, "-" * 30]
-        lines += [f"{k}: {v}" for k, v in self._info.items()]
-        lines += ["", "logs:"] + list(self._logs)[-40:]
+        lines += [f"{k}: {v}" for k, v in info_items]
+        lines += ["", "logs:"] + logs
         iw, ih = int(g["iw"]), int(g["ih"])
         info_img = self._render_info_image(lines, iw, ih)
         if info_img is not None:
