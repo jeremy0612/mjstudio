@@ -30,7 +30,8 @@ from collections import deque
 
 import numpy as np
 
-_GRAB = 10              # px hit-zone around a draggable edge
+_GRAB = 22              # px hit-zone around a draggable edge (framebuffer px; retina ~2x)
+_BAR = 6                # thickness of a visible drag-handle bar
 _MIN_FRAC = 0.05        # smallest panel size as a fraction of the viewport
 
 
@@ -120,40 +121,36 @@ class PanelViewer:
         import mujoco
 
         vp = self._handle.viewport  # mjrRect of the 3D view (excludes native panels)
-        self._handle_drag(vp)
+        frames = self._render_thumbs() if frames is None else frames
+        cams = [c for c in self._cameras if frames and frames.get(c) is not None]
+        aspect = (frames[cams[0]].shape[1] / frames[cams[0]].shape[0]) if cams else 4 / 3
+
+        self._handle_drag(vp, self._geom(vp, len(cams), aspect))
+        g = self._geom(vp, len(cams), aspect)   # geometry after any drag
 
         images = []
-        # --- camera strip along the bottom of the 3D viewport ---
-        frames = self._render_thumbs() if frames is None else frames
-        strip_h = max(1, int(self._strip_frac * vp.height))
-        if frames and self._cameras:
-            x = vp.left
-            for name in self._cameras:
-                fr = frames.get(name)
-                if fr is None:
-                    continue
-                h, w = fr.shape[:2]
-                tw = max(1, int(strip_h * w / h))
-                thumb = _nn_resize(fr, tw, strip_h)
-                if self._flip:
-                    thumb = thumb[::-1]
-                if x + tw > vp.left + vp.width:   # clip the strip to the viewport width
-                    break
-                images.append((mujoco.MjrRect(x, vp.bottom, tw, strip_h), np.ascontiguousarray(thumb)))
-                x += tw
+        # --- camera strip: all N thumbs fit across the viewport width ---
+        tw, th = int(g["tw"]), int(g["th"])
+        for i, name in enumerate(cams):
+            thumb = _nn_resize(frames[name], tw, th)
+            if self._flip:
+                thumb = thumb[::-1]
+            x = int(vp.left + i * tw)
+            images.append((mujoco.MjrRect(x, vp.bottom, tw, th), np.ascontiguousarray(thumb)))
+        if cams:
+            images.append(self._hbar(vp.left, g["strip_y"], len(cams) * tw, self._drag == "strip"))
 
         # --- info/log panel, top-right of the viewport ---
         lines = [self.title, "-" * 30]
         lines += [f"{k}: {v}" for k, v in self._info.items()]
         lines += ["", "logs:"] + list(self._logs)[-40:]
-        iw = max(1, int(self._info_w_frac * vp.width))
-        ih = max(1, int(self._info_h_frac * vp.height))
+        iw, ih = int(g["iw"]), int(g["ih"])
         info_img = self._render_info_image(lines, iw, ih)
         if info_img is not None:
-            ix = vp.left + vp.width - iw
-            iy = vp.bottom + vp.height - ih
             img = info_img[::-1] if self._flip else info_img
-            images.append((mujoco.MjrRect(ix, iy, iw, ih), np.ascontiguousarray(img)))
+            images.append((mujoco.MjrRect(int(g["ix"]), int(g["iy"]), iw, ih), np.ascontiguousarray(img)))
+            images.append(self._vbar(g["ix"], g["iy"], ih, self._drag == "info_w"))   # left edge
+            images.append(self._hbar(g["ix"], g["iy"], iw, self._drag == "info_h"))   # bottom edge
         else:
             # no PIL: fall back to anchored (non-draggable) overlay text
             self._handle.set_texts([(
@@ -164,6 +161,24 @@ class PanelViewer:
         if images:
             self._handle.set_images(images)
         self._handle.sync()
+
+    def _geom(self, vp, n, aspect):
+        """Panel geometry in framebuffer px (same frame as the mouse). Thumbs are
+        height-driven (so dragging the strip edge rescales them) but the height is
+        capped so all N fit the viewport width."""
+        strip_h = self._strip_frac * vp.height
+        if n:
+            th = min(strip_h, vp.width / (n * aspect))
+        else:
+            th = 0.0
+        tw = th * aspect
+        iw = self._info_w_frac * vp.width
+        ih = self._info_h_frac * vp.height
+        return {
+            "th": th, "tw": tw, "strip_w": n * tw, "strip_y": vp.bottom + th,
+            "iw": iw, "ih": ih,
+            "ix": vp.left + vp.width - iw, "iy": vp.bottom + vp.height - ih,
+        }
 
     # ---- drag handling ----
     def _mouse(self):
@@ -181,21 +196,17 @@ class PanelViewer:
         self._mouse_ok = True
         return mx, my, left
 
-    def _handle_drag(self, vp) -> None:
+    def _handle_drag(self, vp, g) -> None:
         m = self._mouse()
         if m is None:
             return
         mx, my, left = m
-        strip_top = vp.bottom + self._strip_frac * vp.height
-        info_left = vp.left + vp.width - self._info_w_frac * vp.width
-        info_bot = vp.bottom + vp.height - self._info_h_frac * vp.height
-
         if left and not self._prev_left:            # button just pressed → maybe grab an edge
-            if abs(my - strip_top) <= _GRAB and vp.left <= mx <= vp.left + vp.width * 0.6:
+            if abs(my - g["strip_y"]) <= _GRAB and vp.left - _GRAB <= mx <= vp.left + g["strip_w"] + _GRAB:
                 self._drag = "strip"
-            elif abs(mx - info_left) <= _GRAB and my >= info_bot - _GRAB:
+            elif abs(mx - g["ix"]) <= _GRAB and my >= g["iy"] - _GRAB:
                 self._drag = "info_w"
-            elif abs(my - info_bot) <= _GRAB and mx >= info_left - _GRAB:
+            elif abs(my - g["iy"]) <= _GRAB and mx >= g["ix"] - _GRAB:
                 self._drag = "info_h"
         elif not left:
             self._drag = None
@@ -237,3 +248,19 @@ class PanelViewer:
             draw.text((8, y), str(line)[:200], fill=color, font=self._font)
             y += lh
         return np.asarray(img, dtype=np.uint8)
+
+    def _hbar(self, x, y, w, active):
+        """Horizontal drag-handle bar centred on edge y -> (MjrRect, img)."""
+        import mujoco
+        w = max(1, int(w))
+        img = np.empty((_BAR, w, 3), np.uint8)
+        img[:] = (80, 220, 255) if active else (95, 105, 125)
+        return (mujoco.MjrRect(int(x), int(y - _BAR // 2), w, _BAR), img)
+
+    def _vbar(self, x, y, h, active):
+        """Vertical drag-handle bar centred on edge x -> (MjrRect, img)."""
+        import mujoco
+        h = max(1, int(h))
+        img = np.empty((h, _BAR, 3), np.uint8)
+        img[:] = (80, 220, 255) if active else (95, 105, 125)
+        return (mujoco.MjrRect(int(x - _BAR // 2), int(y), _BAR, h), img)
