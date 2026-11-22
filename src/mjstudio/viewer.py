@@ -142,14 +142,13 @@ class PanelViewer:
     def close(self) -> None:
         self._stop = True
         if self._thread is not None:
+            # The pump owns the offscreen renderer and frees it on exit (see _pump).
             self._thread.join(timeout=1.0)
             self._thread = None
-        if self._renderer is not None:
-            try:
-                self._renderer.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._renderer = None
+        elif self._renderer is not None:  # auto=False: the caller's thread rendered
+            self._close_renderer()
+        # ponytail: if the pump didn't exit in time, leak its renderer — closing it from
+        # here would block forever on the GL context lock; process exit frees it.
         if self._handle is not None:
             try:
                 self._handle.close()
@@ -191,6 +190,18 @@ class PanelViewer:
                     self._pump_err = repr(e)
                     print(f"[mjstudio] pump error (will keep running): {e!r}")
             time.sleep(1 / 60)
+        # Free the renderer HERE, on the thread that created/used it: mujoco's CGL
+        # as_current() locks the context (CGLLockContext) and never unlocks, so closing it
+        # from another thread (close() on the main thread) deadlocks in make_current().
+        self._close_renderer()
+
+    def _close_renderer(self) -> None:
+        if self._renderer is not None:
+            try:
+                self._renderer.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._renderer = None
 
     def _draw(self, frames: dict | None = None) -> None:
         """Handle drags, overlay the panels, then sync the real viewer."""
