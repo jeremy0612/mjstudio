@@ -34,6 +34,7 @@ import numpy as np
 _GRAB = 22              # px hit-zone around a draggable edge (framebuffer px; retina ~2x)
 _BAR = 6                # thickness of a visible drag-handle bar
 _MIN_FRAC = 0.05        # smallest panel size as a fraction of the viewport
+_SB = 14                # width of the info-panel scrollbar (framebuffer px)
 
 
 def _nn_resize(img: np.ndarray, tw: int, th: int) -> np.ndarray:
@@ -85,6 +86,8 @@ class PanelViewer:
         # drag state
         self._prev_left = 0
         self._drag = None          # None | 'strip' | 'info_w' | 'info_h'
+        self._scroll = 0           # info/log panel scroll offset, in lines
+        self._max_scroll = 0       # clamped in _draw once the line count is known
         self._mouse_ok = None      # None=unknown, True/False after first probe
         self._cam_snap = None      # saved free-camera pose while a panel is being dragged
         # background pump: decouples overlay render + mouse/drag from the app's call
@@ -104,9 +107,11 @@ class PanelViewer:
                 self._font = ImageFont.truetype("Menlo.ttc", 13)
             except Exception:  # noqa: BLE001
                 self._font = ImageFont.load_default()
+            self._char_w = self._font.getlength("M")  # monospace, or the widest letter
         except Exception:  # noqa: BLE001
             self._pil = False
             self._font = None
+            self._char_w = 8
 
     # ---- lifecycle ----
     def open(self, show_left_ui: bool = True, show_right_ui: bool = True,
@@ -117,6 +122,7 @@ class PanelViewer:
         # so the app only has to feed data via info()/log()/update(frames=...). Set
         # auto=False to drive everything yourself from update() (single-thread apps).
         import mujoco.viewer
+        # No key_callback: MuJoCo binds every letter, and a key it also binds would do both.
         self._handle = mujoco.viewer.launch_passive(
             self._m, self._d, show_left_ui=show_left_ui, show_right_ui=show_right_ui)
         self._auto = auto
@@ -213,8 +219,9 @@ class PanelViewer:
         frames = self._render_thumbs() if frames is None else frames
         cams = [c for c in self._cameras if frames and frames.get(c) is not None]
 
-        self._handle_drag(vp, self._geom(vp, len(cams)))
-        g = self._geom(vp, len(cams))   # geometry after any drag
+        aspect = max((frames[c].shape[0] / frames[c].shape[1] for c in cams), default=0.0)
+        self._handle_drag(vp, self._geom(vp, len(cams), aspect))
+        g = self._geom(vp, len(cams), aspect)   # geometry after any drag
 
         images = []
         # --- camera strip: all N thumbs fit across the viewport width ---
@@ -231,12 +238,18 @@ class PanelViewer:
         # --- info/log panel, top-right of the viewport ---
         with self._lock:   # snapshot shared state quickly, render without the lock
             info_items = list(self._info.items())
-            logs = list(self._logs)[-40:]
-        lines = [self.title, "-" * 30]
+            logs = list(self._logs)   # all of them; scroll reaches the rest
+        lines = [self.title, ""]
         lines += [f"{k}: {v}" for k, v in info_items]
-        lines += ["", "logs:"] + logs
+        lines += ["", f"logs ({len(logs)}, newest first):"] + logs[::-1]
         iw, ih = int(g["iw"]), int(g["ih"])
-        info_img = self._render_info_image(lines, iw, ih)
+        # Hard wrap, so nothing is cut at the right edge. Slicing, not textwrap: 400 lines at 60 Hz.
+        cols = max(8, int((iw - 8 - _SB) // self._char_w))
+        lines = [s[i:i + cols] for s in map(str, lines) for i in range(0, max(1, len(s)), cols)]
+        visible = max(1, (ih - 6) // 16)   # lines that fit (lh=16, top margin=6)
+        self._max_scroll = max(0, len(lines) - visible)
+        self._scroll = min(self._scroll, self._max_scroll)
+        info_img = self._render_info_image(lines, iw, ih, self._scroll, self._max_scroll, visible)
         if info_img is not None:
             img = info_img[::-1] if self._flip else info_img
             images.append((mujoco.MjrRect(int(g["ix"]), int(g["iy"]), iw, ih), np.ascontiguousarray(img)))
@@ -246,23 +259,23 @@ class PanelViewer:
             # no PIL: fall back to anchored (non-draggable) overlay text
             self._handle.set_texts([(
                 mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
-                "\n".join(lines[:60]), "",
+                "\n".join(lines[self._scroll:self._scroll + 60]), "",
             )])
 
         if images:
             self._handle.set_images(images)
         self._handle.sync()
 
-    def _geom(self, vp, n):
+    def _geom(self, vp, n, aspect):
         """Panel geometry in framebuffer px (same frame as the mouse).
 
         Camera strip: thumbs fill the full viewport width (each = vp.width/n); dragging
-        the strip's top edge changes only their height (vertical). The info/log panel
-        resizes on both axes. ponytail: thumbs are stretched to fill (aspect not kept) —
-        that's the requested "fill the width" behaviour.
+        the strip's top edge changes only their height (vertical), never above the frames'
+        own ``aspect`` (h/w): taller would only add an empty band. The info/log panel
+        resizes on both axes.
         """
-        th = (self._strip_frac * vp.height) if n else 0.0
         tw = (vp.width / n) if n else 0.0
+        th = min(self._strip_frac * vp.height, tw * aspect)
         iw = self._info_w_frac * vp.width
         ih = self._info_h_frac * vp.height
         return {
@@ -292,17 +305,25 @@ class PanelViewer:
         if m is None:
             return
         mx, my, left = m
+        sb_x0 = g["ix"] + g["iw"] - _SB   # scrollbar band on the panel's right inner edge
         if left and not self._prev_left:            # button just pressed → maybe grab an edge
-            if abs(my - g["strip_y"]) <= _GRAB and vp.left - _GRAB <= mx <= vp.left + g["strip_w"] + _GRAB:
+            in_x = mx <= g["ix"] + g["iw"]          # beyond it is MuJoCo's own right panel
+            if self._max_scroll > 0 and sb_x0 - _GRAB <= mx and in_x and g["iy"] <= my <= g["iy"] + g["ih"]:
+                self._drag = "scroll"   # grab the scrollbar — wheel can't scroll (MuJoCo owns it)
+            elif abs(my - g["strip_y"]) <= _GRAB and vp.left - _GRAB <= mx <= vp.left + g["strip_w"] + _GRAB:
                 self._drag = "strip"
             elif abs(mx - g["ix"]) <= _GRAB and my >= g["iy"] - _GRAB:
                 self._drag = "info_w"
-            elif abs(my - g["iy"]) <= _GRAB and mx >= g["ix"] - _GRAB:
+            elif abs(my - g["iy"]) <= _GRAB and mx >= g["ix"] - _GRAB and in_x:
                 self._drag = "info_h"
         elif not left:
             self._drag = None
 
-        if self._drag == "strip" and vp.height:
+        if self._drag == "scroll" and g["ih"]:
+            # top of the panel (high my) = offset 0; drag down to see later lines
+            frac = min(1.0, max(0.0, (g["iy"] + g["ih"] - my) / g["ih"]))
+            self._scroll = round(frac * self._max_scroll)
+        elif self._drag == "strip" and vp.height:
             self._strip_frac = min(0.8, max(_MIN_FRAC, (my - vp.bottom) / vp.height))
         elif self._drag == "info_w" and vp.width:
             self._info_w_frac = min(0.8, max(_MIN_FRAC, (vp.left + vp.width - mx) / vp.width))
@@ -351,7 +372,7 @@ class PanelViewer:
                 out[name] = self._renderer.render()
         return out
 
-    def _render_info_image(self, lines, w, h):
+    def _render_info_image(self, lines, w, h, offset=0, max_scroll=0, visible=0):
         if not self._pil:
             return None
         from PIL import Image, ImageDraw
@@ -359,12 +380,19 @@ class PanelViewer:
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, w - 1, h - 1], outline=(70, 80, 100))
         y, lh = 6, 16
-        for i, line in enumerate(lines):
+        for gi, line in enumerate(lines[offset:], start=offset):
             if y > h - lh:
                 break
-            color = (120, 200, 255) if i == 0 else (210, 215, 225)
-            draw.text((8, y), str(line)[:200], fill=color, font=self._font)
+            color = (120, 200, 255) if gi == 0 else (210, 215, 225)
+            draw.text((8, y), line, fill=color, font=self._font)
             y += lh
+        if max_scroll > 0:   # draggable scrollbar on the right edge (wheel can't — MuJoCo owns it)
+            total = max_scroll + max(1, visible)
+            bx0 = w - _SB
+            draw.rectangle([bx0, 1, w - 2, h - 2], fill=(30, 33, 40))                 # track
+            th = max(14, int((h - 2) * max(1, visible) / total))
+            ty = int((h - 2 - th) * (offset / max_scroll))
+            draw.rectangle([bx0 + 2, 1 + ty, w - 4, 1 + ty + th], fill=(95, 110, 140))  # thumb
         return np.asarray(img, dtype=np.uint8)
 
     def _hbar(self, x, y, w, active):

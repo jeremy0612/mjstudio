@@ -8,7 +8,7 @@ zoom, perturbations, camera cycling, keybinds) **and MuJoCo's native left/right 
 come straight from MuJoCo. On top of it, mjstudio overlays:
 
 - a **camera-thumbnail strip** (one live render per named fixed camera) via `set_images`,
-- an **info + log panel** (key/value info and a timestamped log) via `set_images` (PIL) or
+- an **info + log panel** (key/value info and a timestamped log, newest first) via `set_images` (PIL) or
   `set_texts` (fallback).
 
 **Grab a panel edge and drag to resize it.** The strip's top edge sets the thumbnail scale;
@@ -22,7 +22,7 @@ viewer = PanelViewer(model, data, cameras=["cam_left_wrist", "cam_top"]).open()
 while viewer.is_running():
     step()                         # you own model/data and the clock
     viewer.info(step=i, fps=f)     # key/value lines in the panel
-    viewer.log("event happened")   # timestamped log tail
+    viewer.log("event happened")   # timestamped, newest on top
     viewer.update()                # thumbnails + panel + viewer.sync()
 viewer.close()
 ```
@@ -96,10 +96,10 @@ pip install -e '.[panel]'   # + Pillow, for the draggable image info panel
 ## Controls
 3D view + native UI: all MuJoCo's own (drag to orbit, scroll to zoom, `Tab`/`[`/`]` to cycle
 cameras, etc.). Panels: the camera strip fills the viewport width — drag its top edge to change
-height; the info/log panel's left + bottom edges resize it on both axes. Thumbnails keep their
+height (up to the frames' own aspect ratio); the info/log panel's left + bottom edges resize it on both axes. Thumbnails keep their
 aspect ratio (letterboxed) — resizing changes the window, not the frame. While you drag a panel
 the 3D camera is held completely still (the viewer camera is switched to type `USER` for the
-duration of the drag), so the scene doesn't orbit or shake.
+duration of the drag), so the scene doesn't orbit or shake. Hold and pull the scrollbar to scroll the info/log panel.
 
 ## Demo
 
